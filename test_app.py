@@ -1,62 +1,61 @@
+"""Checks that the actual SVG and machine-file pipeline preserves its design."""
+
 import tempfile
 import unittest
 from pathlib import Path
 
-from PIL import Image
+import pyembroidery
+from PIL import Image, ImageDraw
 
-from app import (detect_stitch_directions, image_to_directional_dst,
-                 image_to_svg, kmeans_quantize, remove_background,
-                 svg_to_dst, trim_transparent_margins)
+from app import (image_to_svg, kmeans_quantize, remove_background,
+                 simplify_color_regions, trim_transparent_margins)
+from stitch_generator import (rasterize_region_svg, render_stitch_preview,
+                              svg_to_stitch_file)
 
 
 class ConversionTests(unittest.TestCase):
-    def test_background_removal_keeps_foreground(self):
-        image = Image.new("RGB", (5, 5), "white")
-        for x in range(5):
-            image.putpixel((x, 0), (230, 230, 230))
-        image.putpixel((2, 2), (255, 0, 0))
-        result = remove_background(image)
-        self.assertEqual(result.getpixel((0, 0))[3], 0)
-        self.assertEqual(result.getpixel((2, 2)), (255, 0, 0, 255))
+    def test_background_and_palette_keep_subject_alpha(self):
+        image = Image.new("RGB", (20, 20), "white")
+        ImageDraw.Draw(image).rectangle((4, 4, 15, 15), fill="brown")
+        cutout = trim_transparent_margins(remove_background(image))
+        self.assertEqual(cutout.size, (12, 12))
+        quantized = simplify_color_regions(kmeans_quantize(cutout, 2))
+        self.assertEqual(quantized.getchannel("A").getextrema(), (255, 255))
+        self.assertLessEqual(len(set(quantized.getdata())), 2)
 
-    def test_transparent_margins_are_trimmed(self):
-        image = Image.new("RGBA", (5, 5), (0, 0, 0, 0))
-        image.putpixel((2, 3), (255, 0, 0, 255))
-        self.assertEqual(trim_transparent_margins(image).size, (1, 1))
-
-    def test_quantization_uses_requested_palette(self):
-        image = Image.new("RGB", (4, 1), "red")
-        image.putpixel((1, 0), (0, 255, 0))
-        image.putpixel((2, 0), (0, 0, 255))
-        result = kmeans_quantize(image, 2)
-        self.assertLessEqual(len(set(result.getdata())), 2)
-        self.assertEqual(result.mode, "RGBA")
-
-    def test_stitch_direction_field_matches_image_size(self):
-        directions = detect_stitch_directions(Image.new("RGB", (4, 3), "red"))
-        self.assertEqual((len(directions[0]), len(directions)), (4, 3))
-
-    def test_directional_dst_contains_stitches(self):
-        image = Image.new("RGBA", (20, 10), (255, 0, 0, 255))
-        directions = detect_stitch_directions(image)
+    def test_svg_geometry_and_machine_files(self):
+        image = Image.new("RGBA", (80, 60), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((5, 5, 74, 54), fill=(180, 90, 45, 255))
+        draw.rectangle((27, 20, 52, 39), fill=(0, 0, 0, 0))
+        draw.ellipse((32, 24, 47, 35), fill=(40, 30, 25, 255))
         with tempfile.TemporaryDirectory() as directory:
-            dst = Path(directory) / "directional.dst"
-            image_to_directional_dst(image, directions, dst)
-            self.assertGreater(dst.stat().st_size, 512)
-            self.assertEqual(dst.read_bytes()[:512].count(b"LA:"), 1)
-            jef = Path(directory) / "directional.jef"
-            image_to_directional_dst(image, directions, jef, format_name="JEF")
-            self.assertGreater(jef.stat().st_size, 100)
+            folder = Path(directory)
+            svg = folder / "dog.svg"
+            image_to_svg(image, svg, max_dimension=40)
+            raster = rasterize_region_svg(svg)
+            self.assertEqual(raster.size, image.size)
+            self.assertEqual(raster.getpixel((39, 21))[3], 0)
+            self.assertEqual(raster.getpixel((39, 30))[:3], (40, 30, 25))
 
-    def test_svg_can_be_converted_to_dst(self):
-        with tempfile.TemporaryDirectory() as directory:
-            svg = Path(directory) / "image.svg"
-            dst = Path(directory) / "image.dst"
-            image_to_svg(Image.new("RGB", (3, 2), "red"), svg)
-            self.assertIn("<path", svg.read_text())
-            svg_to_dst(svg, dst)
-            self.assertGreater(dst.stat().st_size, 512)
-            self.assertEqual(dst.read_bytes()[:2], b"LA")
+            previews = []
+            for format_name in ("DST", "PES"):
+                machine_file = folder / f"dog.{format_name.lower()}"
+                metrics = svg_to_stitch_file(svg, machine_file, format_name)
+                self.assertGreater(metrics["stitches"], 100)
+                self.assertLessEqual(metrics["max_stitch_mm"], 4.1)
+                self.assertLessEqual(metrics["max_jump_mm"], 12.1)
+                self.assertGreaterEqual(metrics["stitch_coverage"], 0.9)
+                self.assertEqual(metrics["color_changes"], 1)
+                if format_name == "PES":
+                    actual = [thread.color & 0xFFFFFF for thread in
+                              pyembroidery.read_pes(str(machine_file)).threadlist]
+                    expected = [(red << 16) | (green << 8) | blue
+                                for red, green, blue in metrics["palette"]]
+                    self.assertEqual(actual, expected)
+                previews.append(render_stitch_preview(
+                    machine_file, format_name, metrics["palette"]))
+            self.assertEqual(previews[0].tobytes(), previews[1].tobytes())
 
 
 if __name__ == "__main__":

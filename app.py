@@ -1,7 +1,7 @@
 """Tkinter photo quantizer and embroidery converter.
 
 The conversion pipeline is:
-PNG/JPEG -> background removal -> k-means colour quantization -> SVG -> DST.
+PNG/JPEG -> background removal -> k-means colour quantization -> SVG -> DST/PES.
 """
 
 from __future__ import annotations
@@ -9,14 +9,17 @@ from __future__ import annotations
 import os
 import shutil
 import xml.etree.ElementTree as ET
-import math
+from functools import lru_cache
+from queue import Empty, Queue
+from threading import Thread
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageOps
+from stitch_generator import (FILL_MAX_STITCH_MM, FILL_SPACING_MM,
+                              render_stitch_preview, svg_to_stitch_file)
 
 RGB = tuple[int, int, int]
-RGBA = tuple[int, int, int, int]
 MAX_PROCESS_DIMENSION = 240
 MIN_PROCESS_DIMENSION = 180
 
@@ -57,8 +60,16 @@ def remove_background(image: Image.Image, tolerance: int = 55) -> Image.Image:
     return output
 
 
-def remove_background_with_model(image: Image.Image) -> Image.Image:
-    """Remove the subject with rembg's local segmentation model."""
+@lru_cache(maxsize=2)
+def _background_session(model_name: str) -> Any:
+    from rembg import new_session
+
+    return new_session(model_name)
+
+
+def remove_background_with_model(image: Image.Image,
+                                 model_name: str = "u2netp") -> Image.Image:
+    """Remove the subject with a cached local rembg model session."""
     try:
         from rembg import remove
     except ImportError as error:
@@ -66,7 +77,7 @@ def remove_background_with_model(image: Image.Image) -> Image.Image:
             "The rembg package is required for model-based background removal. "
             "Install dependencies with: python -m pip install -r requirements.txt"
         ) from error
-    result = remove(image.convert("RGBA"))
+    result = remove(image.convert("RGBA"), session=_background_session(model_name))
     if not isinstance(result, Image.Image):
         raise RuntimeError("The background-removal model returned an invalid image.")
     return result.convert("RGBA")
@@ -75,7 +86,7 @@ def remove_background_with_model(image: Image.Image) -> Image.Image:
 def trim_transparent_margins(image: Image.Image) -> Image.Image:
     """Crop transparent padding so exported designs have no blank margins."""
     source = image.convert("RGBA")
-    bounds = source.getchannel("A").getbbox()
+    bounds = source.getchannel("A").point(lambda value: 255 if value >= 128 else 0).getbbox()
     if bounds is None:
         raise ValueError("Background removal produced no visible subject.")
     return source.crop(bounds)
@@ -87,7 +98,7 @@ def kmeans_quantize(image: Image.Image, k: int, iterations: int = 12) -> Image.I
         raise ValueError("k must be at least 1")
     source = image.convert("RGBA")
     pixels = list(source.getdata())
-    visible = [pixel[:3] for pixel in pixels if pixel[3] > 0]
+    visible = [pixel[:3] for pixel in pixels if pixel[3] >= 128]
     if not visible:
         raise ValueError("the image has no visible pixels")
 
@@ -117,111 +128,51 @@ def kmeans_quantize(image: Image.Image, k: int, iterations: int = 12) -> Image.I
 
     output = Image.new("RGBA", source.size)
     output.putdata([
-        (*min(palette, key=lambda colour: _distance_sq(pixel[:3], colour)), pixel[3])
-        if pixel[3] > 0 else (0, 0, 0, 0)
+        (*min(palette, key=lambda colour: _distance_sq(pixel[:3], colour)), 255)
+        if pixel[3] >= 128 else (0, 0, 0, 0)
         for pixel in pixels
     ])
     return output
 
 
-def detect_stitch_directions(image: Image.Image) -> list[list[float]]:
-    """Estimate local texture tangent angles in radians for future fill stitches."""
-    try:
-        import numpy as np
-        from skimage.filters import sobel_h, sobel_v
-    except ImportError as error:
-        raise RuntimeError(
-            "scikit-image and numpy are required for stitch direction detection."
-        ) from error
-    source = np.asarray(image.convert("RGB"), dtype=float)
-    luminance = (0.299 * source[:, :, 0] + 0.587 * source[:, :, 1] +
-                 0.114 * source[:, :, 2])
-    horizontal = sobel_h(luminance)
-    vertical = sobel_v(luminance)
-    # Gradient direction is perpendicular to the dominant texture tangent.
-    angles = np.arctan2(vertical, horizontal) + (np.pi / 2)
-    return angles.tolist()
+def simplify_color_regions(image: Image.Image, minimum_pixels: int = 8) -> Image.Image:
+    """Smooth palette labels and absorb tiny islands without changing the silhouette."""
+    import numpy as np
+    from scipy.ndimage import distance_transform_edt
+    from skimage.measure import label
+    from PIL import ImageFilter
 
+    source = np.asarray(image.convert("RGBA"))
+    visible = source[:, :, 3] >= 128
+    if not visible.any():
+        raise ValueError("The image has no visible subject to simplify.")
+    colors = sorted({tuple(map(int, rgb)) for rgb in source[visible, :3]})
+    palette = {color: index for index, color in enumerate(colors)}
+    labels = np.full(visible.shape, len(colors), dtype=np.uint8)
+    for color, index in palette.items():
+        labels[visible & np.all(source[:, :, :3] == color, axis=2)] = index
 
-def image_to_directional_dst(image: Image.Image, directions: list[list[float]],
-                             path: str | os.PathLike[str],
-                             spacing: int = 1, segment_length: int = 10,
-                             format_name: str = "DST") -> None:
-    """Write fill stitches aligned to the local texture tangent field."""
-    source = image.convert("RGBA")
-    width, height = source.size
-    points: list[tuple[float, float, int]] = []
-    position = (0, 0)
-    colours = sorted({pixel[:3] for pixel in source.getdata() if pixel[3] > 0})
-    for colour_index, colour in enumerate(colours):
-        if colour_index:
-            points.append((position[0], position[1], 5))
-        for y in range(0, height, max(1, spacing)):
-            x = 0
-            while x < width:
-                while (x < width and
-                       (source.getpixel((x, y))[3] == 0 or
-                        source.getpixel((x, y))[:3] != colour)):
-                    x += 1
-                start = x
-                while (x < width and source.getpixel((x, y))[3] > 0 and
-                       source.getpixel((x, y))[:3] == colour):
-                    x += 1
-                if start == x:
-                    continue
-                for segment_start in range(start, x, max(2, segment_length)):
-                    segment_end = min(x, segment_start + max(2, segment_length))
-                    angles = directions[y][segment_start:segment_end]
-                    if not angles:
-                        continue
-                    sine = sum(math.sin(angle) for angle in angles)
-                    cosine = sum(math.cos(angle) for angle in angles)
-                    angle = math.atan2(sine, cosine)
-                    half_length = (segment_end - segment_start) / 2
-                    center_x = (segment_start + segment_end) / 2
-                    center_y = y
-                    first = (round(center_x - math.cos(angle) * half_length),
-                             round(center_y - math.sin(angle) * half_length))
-                    second = (round(center_x + math.cos(angle) * half_length),
-                              round(center_y + math.sin(angle) * half_length))
-                    for target in (first, second):
-                        target = (max(0, min(width - 1, target[0])),
-                                  max(0, min(height - 1, target[1])))
-                        command = 1 if target == first and position != (0, 0) else 0
-                        points.append((target[0], target[1], command))
-                        position = target
-    _write_embroidery_points(points, path, format_name, colours)
+    # Filter palette indices, never separate RGB and alpha channels. Restore the
+    # source silhouette so a transparent neighbor cannot erase the dog.
+    filtered = np.asarray(Image.fromarray(labels).filter(ImageFilter.ModeFilter(3)))
+    labels = np.where(visible & (filtered < len(colors)), filtered, labels)
+    removable = np.zeros(visible.shape, dtype=bool)
+    for index in range(len(colors)):
+        components = label(visible & (labels == index), connectivity=2)
+        counts = np.bincount(components.ravel())
+        if len(counts) > 1:
+            removable |= (components > 0) & (counts[components] < minimum_pixels)
+    stable = visible & ~removable
+    if stable.any() and removable.any():
+        nearest = distance_transform_edt(~stable, return_distances=False,
+                                         return_indices=True)
+        labels[removable] = labels[tuple(axis[removable] for axis in nearest)]
 
-
-def _write_embroidery_points(points: list[tuple[float, float, int]],
-                             path: str | os.PathLike[str],
-                             format_name: str = "JEF",
-                             thread_colors: list[RGB] | None = None) -> None:
-    try:
-        import pyembroidery
-    except ImportError as error:
-        raise RuntimeError(
-            "pyembroidery is required for valid DST output. "
-            "Install dependencies with: python -m pip install -r requirements.txt"
-        ) from error
-    pattern = pyembroidery.EmbPattern()
-    for colour in thread_colors or []:
-        thread = pyembroidery.EmbThread()
-        thread.color = (colour[0] << 16) | (colour[1] << 8) | colour[2]
-        pattern.add_thread(thread)
-    for x, y, command in points:
-        pattern.add_stitch_absolute(command, x, y)
-    pattern.add_stitch_absolute(pyembroidery.END, 0, 0)
-    writers = {"JEF": pyembroidery.write_jef, "DST": pyembroidery.write_dst}
-    try:
-        writers[format_name](pattern, str(path))
-    except KeyError as error:
-        raise ValueError(f"Unsupported embroidery format: {format_name}") from error
-
-
-def _write_dst_points(points: list[tuple[float, float, int]],
-                      path: str | os.PathLike[str]) -> None:
-    _write_embroidery_points(points, path, "DST")
+    result = np.zeros_like(source)
+    for color, index in palette.items():
+        result[(labels == index) & visible, :3] = color
+    result[visible, 3] = 255
+    return Image.fromarray(result, "RGBA")
 
 
 def _hex(colour: RGB) -> str:
@@ -229,11 +180,14 @@ def _hex(colour: RGB) -> str:
 
 
 def image_to_svg(image: Image.Image, path: str | os.PathLike[str],
-                 max_dimension: int = 120) -> None:
+                 max_dimension: int = 120,
+                 max_stitch_mm: float = FILL_MAX_STITCH_MM,
+                 row_spacing_mm: float = FILL_SPACING_MM) -> None:
     """Write connected same-colour regions as SVG contour paths."""
     try:
         import numpy as np
-        from skimage.measure import find_contours
+        from skimage.measure import approximate_polygon, find_contours, label
+        from scipy.ndimage import find_objects
     except ImportError as error:
         raise RuntimeError(
             "scikit-image is required for smooth SVG contours. "
@@ -242,90 +196,88 @@ def image_to_svg(image: Image.Image, path: str | os.PathLike[str],
     source = image.convert("RGBA")
     width, height = source.size
     scale = max_dimension / max(width, height)
-    svg_width = max(1, round(width * scale))
-    svg_height = max(1, round(height * scale))
+    svg_width = width * scale
+    svg_height = height * scale
+    inkscape_namespace = "http://www.inkscape.org/namespaces/inkscape"
+    sodipodi_namespace = "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+    svg_namespace = "http://www.w3.org/2000/svg"
+    ET.register_namespace("inkscape", inkscape_namespace)
+    ET.register_namespace("sodipodi", sodipodi_namespace)
+    ET.register_namespace("svg", svg_namespace)
     root = ET.Element("svg", {
-        "xmlns": "http://www.w3.org/2000/svg",
-        "width": f"{svg_width}mm", "height": f"{svg_height}mm",
+        "xmlns": svg_namespace,
+        "xmlns:inkscape": inkscape_namespace,
+        "xmlns:sodipodi": sodipodi_namespace,
+        "xmlns:svg": svg_namespace,
+        "width": f"{svg_width:.3f}mm", "height": f"{svg_height:.3f}mm",
         "viewBox": f"0 0 {width} {height}",
+        "version": "1.1",
+        "id": "svg1",
+        "sodipodi:docname": Path(path).name,
+        "inkscape:version": "1.4",
+        "data-inkstitch-version": "3.3.0",
     })
+    inkstitch_namespace = "http://inkstitch.org/namespace"
+    ET.register_namespace("inkstitch", inkstitch_namespace)
     groups: dict[RGB, ET.Element] = {}
     pixels = list(source.getdata())
-    colours = {pixel[:3] for pixel in pixels if pixel[3] > 0}
+    colours = sorted({pixel[:3] for pixel in pixels if pixel[3] >= 128})
     for colour in colours:
         mask = [[pixels[y * width + x][:3] == colour and
-                 pixels[y * width + x][3] > 0 for x in range(width)]
+                 pixels[y * width + x][3] >= 128 for x in range(width)]
                 for y in range(height)]
-        group = groups.setdefault(colour, ET.SubElement(root, "g", {
-            "id": f"color-{len(groups) + 1}", "fill": _hex(colour)
-        }))
-        padded_mask = np.pad(np.asarray(mask, dtype=float), 1, constant_values=0)
-        for contour in find_contours(padded_mask, 0.5):
-            if len(contour) < 3:
+        mask_array = np.asarray(mask, dtype=bool)
+        group_attributes = {"id": f"color-{len(groups) + 1}", "fill": _hex(colour)}
+        group = ET.SubElement(root, "g", group_attributes)
+        groups[colour] = group
+        components = label(mask_array, connectivity=2)
+        for component_id, bounds in enumerate(find_objects(components), start=1):
+            if bounds is None:
                 continue
-            points = [(float(point[1] - 1), float(point[0] - 1)) for point in contour]
-            path_data = "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z"
-            ET.SubElement(group, "path", {"d": path_data})
+            y_slice, x_slice = bounds
+            component = components[y_slice, x_slice] == component_id
+            if component.sum() < 8 and width * height > 100:
+                continue
+            padded_mask = np.pad(component.astype(float), 1, constant_values=0)
+            path_data_parts = []
+            for contour in find_contours(padded_mask, 0.5):
+                if len(contour) < 3:
+                    continue
+                contour = approximate_polygon(contour, tolerance=0.5)
+                points = [(float(point[1] - 1 + x_slice.start),
+                           float(point[0] - 1 + y_slice.start)) for point in contour]
+                area = abs(sum(
+                    points[index][0] * points[(index + 1) % len(points)][1] -
+                    points[(index + 1) % len(points)][0] * points[index][1]
+                    for index in range(len(points))
+                )) / 2
+                if len(points) < 3 or area < 1:
+                    continue
+                path_data_parts.append(
+                    "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z")
+            if not path_data_parts:
+                continue
+            path_attributes = {
+                "d": " ".join(path_data_parts),
+                "fill-rule": "evenodd",
+                f"{{{inkstitch_namespace}}}auto_fill": "true",
+                f"{{{inkstitch_namespace}}}angle": "90",
+                f"{{{inkstitch_namespace}}}row_spacing_mm": str(row_spacing_mm),
+                f"{{{inkstitch_namespace}}}max_stitch_length_mm": str(max_stitch_mm),
+                f"{{{inkstitch_namespace}}}fill_underlay": "true",
+                f"{{{inkstitch_namespace}}}fill_underlay_angle": "0",
+                f"{{{inkstitch_namespace}}}fill_underlay_row_spacing_mm": "0.8",
+                f"{{{inkstitch_namespace}}}fill_underlay_max_stitch_length_mm": str(max_stitch_mm),
+                f"{{{inkstitch_namespace}}}ties": "true",
+            }
+            ET.SubElement(group, "path", path_attributes)
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
-
-
-def _dst_record(dx: int, dy: int, *, jump: bool = False,
-                trim: bool = False, end: bool = False) -> bytes:
-    """Encode one Tajima DST stitch record."""
-    dx = max(-121, min(121, int(round(dx))))
-    dy = max(-121, min(121, int(round(dy))))
-    record = [0, 0, 0]
-    # DST uses 7-bit signed movement split across three bytes.
-    for value, first, second, third in ((dx, 0x01, 0x02, 0x04), (dy, 0x10, 0x20, 0x40)):
-        if value < 0:
-            value = -value
-            record[2] |= 0x80 if first == 0x01 else 0x08
-        if value & 1:
-            record[0] |= first
-        if value & 2:
-            record[0] |= second
-        if value & 4:
-            record[0] |= third
-        if value & 8:
-            record[1] |= first
-        if value & 16:
-            record[1] |= second
-        if value & 32:
-            record[1] |= third
-        if value & 64:
-            record[2] |= first
-        if value & 128:
-            record[2] |= second
-    record[2] |= 0x83
-    if jump:
-        record[2] |= 0x10
-    if trim:
-        record[2] |= 0x20
-    if end:
-        return b"\x00\x00\xf3"
-    return bytes(record)
 
 
 def svg_to_dst(svg_path: str | os.PathLike[str],
                dst_path: str | os.PathLike[str]) -> None:
-    """Convert SVG contour paths into a valid DST running-stitch file."""
-    root = ET.parse(svg_path).getroot()
-    points: list[tuple[float, float, int]] = []
-    position = (0, 0)
-    groups = list(root)
-    for group_index, group in enumerate(groups):
-        if group_index:
-            points.append((position[0], position[1], 1))
-        for element in list(group):
-            values = [float(value) for value in
-                      element.attrib["d"].replace("M", "").replace("L", "")
-                      .replace("Z", "").replace(",", " ").split()]
-            contour_points = list(zip(values[::2], values[1::2]))
-            for target in contour_points:
-                target_position = (round(target[0]), round(target[1]))
-                points.append((target_position[0], target_position[1], 0))
-                position = target_position
-    _write_dst_points(points, dst_path)
+    """Convert the SVG's filled color regions into a checked DST file."""
+    svg_to_stitch_file(svg_path, dst_path, "DST")
 
 
 class ConverterApp:
@@ -341,37 +293,47 @@ class ConverterApp:
         self.image: Image.Image | None = None
         self.quantized: Image.Image | None = None
         self.foreground: Image.Image | None = None
-        self.stitch_directions: list[list[float]] | None = None
+        self.stitch_preview: Image.Image | None = None
+        self.stitch_metrics: dict[str, float | int | list[tuple[int, int, int]]] | None = None
         self.input_path: Path | None = None
         self.svg_path: Path | None = None
         self.dst_path: Path | None = None
-        self.format_value = tk.StringVar(value="JEF")
+        self.format_value = tk.StringVar(value="DST")
+        self.model_value = tk.StringVar(value="u2netp")
         self.aspect_ratio = 1.0
         self._syncing_dimensions = False
+        self._conversion_queue: Queue = Queue()
+        self._converting = False
         self.preview = self._ttk.Label(root, text="Choose a PNG or JPEG photo", anchor="center")
         self.preview.pack(fill="both", expand=True, padx=12, pady=12)
         controls = self._ttk.Frame(root)
         controls.pack(fill="x", padx=12, pady=(0, 12))
         self._ttk.Button(controls, text="Choose photo…", command=self.choose_photo).pack(side="left")
+        self._ttk.Label(controls, text="Background model:").pack(side="left", padx=(8, 4))
+        self._ttk.Combobox(
+            controls, textvariable=self.model_value, values=("bria-rmbg", "u2netp"),
+            state="readonly", width=10).pack(side="left")
         self._ttk.Label(controls, text="Colours (k):").pack(side="left", padx=(16, 4))
         self.k_value = tk.IntVar(value=6)
-        self._ttk.Spinbox(controls, from_=1, to=32, width=4, textvariable=self.k_value).pack(side="left")
-        self._ttk.Label(controls, text="Width (mm):").pack(side="left", padx=(12, 4))
+        self._ttk.Spinbox(controls, from_=1, to=12, width=4, textvariable=self.k_value).pack(side="left")
+        sizing = self._ttk.Frame(root)
+        sizing.pack(fill="x", padx=12, pady=(0, 12))
+        self._ttk.Label(sizing, text="Width (mm):").pack(side="left", padx=(0, 4))
         self.width_value = tk.DoubleVar(value=100)
-        self._ttk.Entry(controls, textvariable=self.width_value, width=7).pack(side="left")
-        self._ttk.Label(controls, text="Height (mm):").pack(side="left", padx=(8, 4))
+        self._ttk.Entry(sizing, textvariable=self.width_value, width=7).pack(side="left")
+        self._ttk.Label(sizing, text="Height (mm):").pack(side="left", padx=(8, 4))
         self.height_value = tk.DoubleVar(value=100)
-        self._ttk.Entry(controls, textvariable=self.height_value, width=7).pack(side="left")
-        self._ttk.Label(controls, text="Max stitch length (mm):").pack(side="left", padx=(8, 4))
-        self.stitch_value = tk.DoubleVar(value=2.5)
-        self._ttk.Entry(controls, textvariable=self.stitch_value, width=6).pack(side="left")
-        self._ttk.Label(controls, text="Format:").pack(side="left", padx=(8, 4))
+        self._ttk.Entry(sizing, textvariable=self.height_value, width=7).pack(side="left")
+        self._ttk.Label(sizing, text="Max stitch length (mm):").pack(side="left", padx=(8, 4))
+        self.stitch_value = tk.DoubleVar(value=FILL_MAX_STITCH_MM)
+        self._ttk.Entry(sizing, textvariable=self.stitch_value, width=6).pack(side="left")
+        self._ttk.Label(sizing, text="Format:").pack(side="left", padx=(8, 4))
         self._ttk.Combobox(
-            controls, textvariable=self.format_value, values=("JEF", "DST"),
+            sizing, textvariable=self.format_value, values=("DST", "PES", "JEF"),
             state="readonly", width=5).pack(side="left")
         self.width_value.trace_add("write", lambda *_: self._sync_dimension("width"))
         self.height_value.trace_add("write", lambda *_: self._sync_dimension("height"))
-        self.go_button = self._ttk.Button(controls, text="Go", command=self.convert)
+        self.go_button = self._ttk.Button(sizing, text="Go", command=self.convert)
         self.go_button.pack(side="left", padx=(16, 0))
         self.action_frame = self._ttk.Frame(root)
         self.workflow_button = self._ttk.Button(
@@ -387,18 +349,25 @@ class ConverterApp:
     def choose_photo(self) -> None:
         from tkinter import filedialog, messagebox
 
+        if self._converting:
+            return
         selected = filedialog.askopenfilename(
             filetypes=[("Images", "*.png *.jpg *.jpeg"), ("PNG", "*.png"),
                        ("JPEG", "*.jpg *.jpeg")])
         if not selected:
             return
         try:
-            self.image = Image.open(selected).convert("RGBA")
+            with Image.open(selected) as opened:
+                self.image = ImageOps.exif_transpose(opened).convert("RGBA")
         except (OSError, ValueError) as error:
             messagebox.showerror("Cannot open image", str(error))
             return
         self.input_path = Path(selected)
         self.aspect_ratio = self.image.width / self.image.height
+        self.foreground = None
+        self.quantized = None
+        self.stitch_preview = None
+        self.stitch_metrics = None
         self.width_value.set(100)
         self.height_value.set(round(100 / self.aspect_ratio, 1))
         self.action_frame.pack_forget()
@@ -442,15 +411,16 @@ class ConverterApp:
     def show_workflow(self) -> None:
         from PIL import ImageTk
 
-        if self.image is None or self.foreground is None or self.quantized is None:
+        if (self.image is None or self.foreground is None or self.quantized is None
+                or self.stitch_preview is None):
             return
         workflow = self._tk.Toplevel(self.root)
         workflow.title("Conversion workflow")
         workflow.geometry("1100x360")
         row = self._ttk.Frame(workflow)
         row.pack(fill="both", expand=True, padx=12, pady=12)
-        images = [self.image, self.foreground, self.quantized, self.quantized]
-        labels = ["Original photo", "Background removed", "K-means colours", "SVG result"]
+        images = [self.image, self.foreground, self.quantized, self.stitch_preview]
+        labels = ["Original photo", "Background removed", "K-means colours", "Stitch preview"]
         workflow_items = []
         for image, label in zip(images, labels):
             frame = self._ttk.Frame(row)
@@ -495,56 +465,106 @@ class ConverterApp:
     def convert(self) -> None:
         from tkinter import messagebox
 
+        if self._converting:
+            return
         if self.image is None or self.input_path is None:
             messagebox.showinfo("Choose a photo", "Select a PNG or JPEG photo first.")
             return
         try:
             k = self.k_value.get()
-            if not 1 <= k <= 32:
-                raise ValueError("Colours must be between 1 and 32.")
+            if not 1 <= k <= 12:
+                raise ValueError("Photo designs require between 1 and 12 colours.")
             final_width = self.width_value.get()
             final_height = self.height_value.get()
-            average_stitch = self.stitch_value.get()
-            if final_width <= 0 or final_height <= 0 or average_stitch <= 0:
-                raise ValueError("Final dimensions and average stitch size must be positive.")
-            self.status.config(text="Removing background with segmentation model…")
-            self.root.update_idletasks()
-            working_image = self.image.copy()
-            target_width = max(1, round(final_width / average_stitch))
-            target_height = max(1, round(final_height / average_stitch))
+            max_stitch = self.stitch_value.get()
+            if final_width <= 0 or final_height <= 0 or not 0.4 <= max_stitch <= 4.0:
+                raise ValueError("Use positive dimensions and max stitch length 0.4–4 mm.")
+            options = (self.image.copy(), self.input_path, k, final_width,
+                       final_height, max_stitch, self.format_value.get(),
+                       self.model_value.get())
+        except (ValueError, self._tk.TclError) as error:
+            messagebox.showerror("Conversion failed", str(error))
+            return
+        self._converting = True
+        self.go_button.configure(state="disabled")
+        self.status.config(text="Removing background…")
+        Thread(target=self._convert_worker, args=options, daemon=True).start()
+        self.root.after(100, self._poll_conversion)
+
+    def _convert_worker(self, image: Image.Image, input_path: Path, k: int,
+                        final_width: float, final_height: float,
+                        max_stitch: float, format_name: str, model_name: str) -> None:
+        try:
+            target_width = max(1, round(final_width / max_stitch))
+            target_height = max(1, round(final_height / max_stitch))
             minimum_scale = max(MIN_PROCESS_DIMENSION / target_width,
                                 MIN_PROCESS_DIMENSION / target_height, 1)
             maximum_scale = min(MAX_PROCESS_DIMENSION / target_width,
                                 MAX_PROCESS_DIMENSION / target_height)
             scale = min(max(minimum_scale, 1), maximum_scale)
-            working_image = working_image.resize(
+            working_image = image.resize(
                 (max(16, round(target_width * scale)),
                  max(16, round(target_height * scale))), Image.Resampling.LANCZOS)
-            foreground = trim_transparent_margins(
-                remove_background_with_model(working_image))
-            self.status.config(text="Quantizing image…")
-            self.root.update_idletasks()
-            self.quantized = kmeans_quantize(foreground, k)
-            self.stitch_directions = detect_stitch_directions(self.quantized)
-            svg_path = self.input_path.with_name(self.input_path.stem + "_kmeans.svg")
-            format_name = self.format_value.get()
+            if working_image.getchannel("A").getextrema()[0] < 255:
+                foreground = trim_transparent_margins(working_image)
+            else:
+                foreground = trim_transparent_margins(
+                    remove_background_with_model(working_image, model_name))
+            self._conversion_queue.put(("status", "Quantizing and tracing the dog…"))
+            quantized = simplify_color_regions(kmeans_quantize(foreground, k))
+            svg_path = input_path.with_name(input_path.stem + "_kmeans.svg")
             extension = format_name.lower()
-            dst_path = self.input_path.with_name(
-                self.input_path.stem + f"_embroidery.{extension}")
-            self.foreground = foreground
-            self.svg_path = svg_path
-            self.dst_path = dst_path
-            image_to_svg(self.quantized, svg_path, max_dimension=final_width)
-            image_to_directional_dst(
-                self.quantized, self.stitch_directions, dst_path,
-                format_name=format_name)
-            self._show(self.quantized)
-            self.action_frame.pack(fill="x", padx=12, pady=(0, 8))
-            self.status.config(text=f"Saved {svg_path.name} and {dst_path.name}")
-            messagebox.showinfo("Conversion complete",
-                                f"SVG and DST files saved beside {self.input_path.name}.")
-        except (OSError, ValueError, ET.ParseError) as error:
-            messagebox.showerror("Conversion failed", str(error))
+            dst_path = input_path.with_name(input_path.stem + f"_embroidery.{extension}")
+            design_max_dimension = max(final_width, final_height)
+            image_to_svg(quantized, svg_path, max_dimension=design_max_dimension,
+                         max_stitch_mm=max_stitch)
+            self._conversion_queue.put(("status", "Digitizing and checking stitches…"))
+            metrics = svg_to_stitch_file(svg_path, dst_path, format_name=format_name)
+            chart_path = input_path.with_name(input_path.stem + "_thread_colors.txt")
+            chart_path.write_text(
+                "Thread sequence (approximate RGB references)\n" +
+                "\n".join(
+                    f"{index}. #{red:02X}{green:02X}{blue:02X}"
+                    for index, (red, green, blue) in enumerate(metrics["palette"], 1)
+                ) + "\n"
+            )
+            stitch_preview = render_stitch_preview(
+                dst_path, format_name, metrics["palette"])
+            preview_path = input_path.with_name(input_path.stem + "_stitch_preview.png")
+            stitch_preview.save(preview_path)
+            self._conversion_queue.put(("done", (foreground, quantized, svg_path,
+                                                dst_path, stitch_preview, metrics)))
+        except Exception as error:
+            self._conversion_queue.put(("error", error))
+
+    def _poll_conversion(self) -> None:
+        from tkinter import messagebox
+
+        try:
+            while True:
+                kind, payload = self._conversion_queue.get_nowait()
+                if kind == "status":
+                    self.status.config(text=payload)
+                    continue
+                self._converting = False
+                self.go_button.configure(state="normal")
+                if kind == "error":
+                    messagebox.showerror("Conversion failed", str(payload))
+                    return
+                (self.foreground, self.quantized, self.svg_path, self.dst_path,
+                 self.stitch_preview, self.stitch_metrics) = payload
+                self._show(self.stitch_preview)
+                self.action_frame.pack(fill="x", padx=12, pady=(0, 8))
+                self.status.config(
+                    text=(f"Saved {self.svg_path.name} and {self.dst_path.name} · "
+                          f"{self.stitch_metrics['stitches']:,} stitches · "
+                          f"{self.stitch_metrics['width_mm']:.1f} × "
+                          f"{self.stitch_metrics['height_mm']:.1f} mm"))
+                messagebox.showinfo("Conversion complete",
+                                    "SVG, embroidery, and stitch preview saved beside the photo.")
+                return
+        except Empty:
+            self.root.after(100, self._poll_conversion)
 
 
 def main() -> None:

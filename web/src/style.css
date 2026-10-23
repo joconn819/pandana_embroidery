@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Fraunces:opsz,wght,SOFT,WONK@9..144,600,15,1;9..144,700,15,1&display=swap');
+
+:root{font-family:'DM Sans',sans-serif;color:#2f352d;background:#eee8dc;font-synthesis:none}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at 82% 8%,#f8f4eb 0,#eee8dc 42%)}
+button,select,input{font:inherit}
+button,a{touch-action:manipulation}
+.shell{width:min(1320px,calc(100% - 48px));margin:auto}
+.site-header{display:flex;justify-content:space-between;align-items:center;padding:30px 0 24px;border-bottom:1px solid #c9c9b9}
+.wordmark{text-decoration:none;color:#24483d;font-size:1.05rem;font-weight:700;letter-spacing:.17em;display:flex;align-items:center;gap:10px}
+.brand-mark{font-size:1.75rem;line-height:1;color:#9c683e}
+.header-note{font-size:.83rem;letter-spacing:.04em;color:#6b7166}
+.hero{min-height:270px;display:flex;justify-content:space-between;align-items:center;gap:36px;padding:38px 0 34px}
+.eyebrow{text-transform:uppercase;letter-spacing:.2em;font-size:.72rem;font-weight:700;color:#aa7650;margin:0 0 13px}
+h1,h2,h3,p{margin-top:0}
+h1,h2,h3{font-family:'Fraunces',Georgia,serif}
+h1{font-size:clamp(3rem,5.5vw,5.5rem);line-height:1.02;letter-spacing:-.055em;margin-bottom:20px}
+h1 em{color:#ab704c;font-weight:600}
+.intro{font-size:1rem;line-height:1.6;max-width:550px;color:#626a60;margin:0}
+.hero-swatch{width:240px;height:220px;flex:none;border:1px solid #beab88;border-radius:47% 53% 54% 46%;background:#d1d6bd;transform:rotate(-8deg);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#627963;box-shadow:20px 17px 0 #e0d1b7}
+.hero-swatch span{font-size:7rem;line-height:.8;transform:rotate(18deg)}
+.hero-swatch small{font-family:'Fraunces',Georgia,serif;font-style:italic;font-size:1rem;margin-top:14px;transform:rotate(8deg)}
+.workspace{display:grid;grid-template-columns:minmax(290px,370px) minmax(0,1fr);gap:22px;align-items:start;padding-bottom:45px}
+.control-card,.preview-card{background:#faf8f2;border:1px solid #d4d1c5;border-radius:22px;box-shadow:0 9px 30px rgba(63,61,45,.05)}
+.control-card{padding:27px}
+.preview-card{padding:27px 28px 29px;min-height:452px}
+.card-heading{display:flex;align-items:baseline;gap:12px;margin-bottom:22px}
+.step-number{font-size:.72rem;font-weight:700;letter-spacing:.1em;color:#b47a52}
+h2{font-size:1.55rem;line-height:1.2;letter-spacing:-.03em;margin:0}
+.drop-zone{min-height:178px;border:1.5px dashed #aab7a7;border-radius:14px;background:#f3f6ed;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px;padding:18px;cursor:pointer;transition:background .2s,border-color .2s}
+.drop-zone:hover,.drop-zone.dragging{background:#e8f0e3;border-color:#548168}
+.drop-zone input{position:absolute;width:1px;height:1px;opacity:0}
+.drop-zone:focus-within{outline:3px solid #88a393;outline-offset:3px}
+.upload-icon{font-size:2.2rem;color:#547f66;line-height:1;margin-bottom:5px}
+.drop-zone strong{font-size:.93rem;max-width:100%;overflow-wrap:anywhere}
+.drop-zone small{color:#788276;font-size:.76rem}
+.settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:22px 0}
+.settings label{font-size:.75rem;font-weight:700;color:#656c60;display:flex;flex-direction:column;gap:8px}
+.settings select{width:100%;border:1px solid #cdd1c6;border-radius:10px;background:#fff;color:#2f352d;padding:11px 10px;font-size:.92rem}
+.primary-button{width:100%;display:flex;align-items:center;justify-content:space-between;background:#274d40;color:#fff;border:0;border-radius:11px;font-weight:700;padding:15px 17px;cursor:pointer;box-shadow:0 5px 12px rgba(25,63,42,.13)}
+.primary-button:hover{background:#37664e}
+.primary-button:disabled{cursor:progress;opacity:.6}
+.status{min-height:2.6em;margin:14px 2px 0;font-size:.81rem;line-height:1.45;color:#68756a}
+.status.error{color:#ad493c}
+.preview-grid{display:grid;grid-template-columns:1fr 1fr 1.3fr;gap:13px}
+figure{margin:0;min-width:0}
+.image-stage{height:284px;border-radius:12px;border:1px solid #e1dfd5;background:#eee9dc;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.image-stage img{max-width:100%;max-height:100%;object-fit:contain}
+.empty-preview{font-family:'Fraunces',Georgia,serif;font-style:italic;color:#a8aa9a;text-align:center;padding:15px}
+figcaption{text-align:center;margin-top:9px;font-size:.72rem;font-weight:700;color:#748074;text-transform:uppercase;letter-spacing:.12em}
+.results{border-top:1px solid #dfe0d4;margin-top:26px;padding-top:23px}
+.result-heading{display:flex;align-items:end;justify-content:space-between;gap:18px;margin-bottom:16px}
+.result-heading .eyebrow{margin-bottom:5px}
+h3{font-size:1.45rem;margin:0;letter-spacing:-.03em}
+.metrics{font-size:.75rem;color:#687366;margin:0;text-align:right;line-height:1.5}
+.downloads{display:flex;flex-wrap:wrap;gap:8px}
+.palette{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 16px}
+.thread-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #dedfd3;border-radius:999px;padding:4px 8px;font-size:.67rem;color:#616c5f;background:#fff}
+.thread-chip i{width:13px;height:13px;border:1px solid #a6aa9b;border-radius:50%;display:inline-block}
+.download-button{border:1px solid #c9d4c7;color:#2c5944;border-radius:9px;padding:10px 12px;font-size:.79rem;font-weight:700;text-decoration:none;background:#f3f7ee}
+.download-button:hover{background:#e6f0e0}
+footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid #c9c9b9;padding:22px 0 36px;color:#747a6f;font-size:.74rem;line-height:1.5}
+footer p{margin:0;max-width:48%}
+footer a{color:#3a6b50;text-underline-offset:2px}
+@media(max-width:900px){.hero-swatch{display:none}.workspace{grid-template-columns:1fr}.preview-card{min-height:0}.image-stage{height:250px}}
+@media(max-width:620px){.shell{width:min(100% - 28px,480px)}.site-header{padding:20px 0}.header-note{display:none}.hero{padding:38px 0}.control-card,.preview-card{padding:20px}.preview-grid{grid-template-columns:1fr 1fr}.stitch-figure{grid-column:1/-1}.image-stage{height:190px}.stitch-figure .image-stage{height:300px}.result-heading{align-items:start;flex-direction:column}.metrics{text-align:left}footer{flex-direction:column}footer p{max-width:none}}

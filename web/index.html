@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eee8dc" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <title>Pandana — Dog Photo to Embroidery</title>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="site-header">
+        <a class="wordmark" href="./" aria-label="Pandana home"><span class="brand-mark">✳</span> PANDANA</a>
+        <span class="header-note">Make their portrait stitchable.</span>
+      </header>
+
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Photo → thread</p>
+          <h1 id="page-title">Your best friend,<br /><em>in stitches.</em></h1>
+          <p class="intro">Turn a dog photo into a six-color embroidery design. See the stitch preview, then download files for your machine.</p>
+        </div>
+        <div class="hero-swatch" aria-hidden="true"><span>✳</span><small>made with care</small></div>
+      </section>
+
+      <section class="workspace" aria-label="Create an embroidery design">
+        <form id="convert-form" class="control-card">
+          <div class="card-heading"><span class="step-number">01</span><h2>Choose a portrait</h2></div>
+          <label id="drop-zone" class="drop-zone" for="photo-input">
+            <input id="photo-input" name="photo" type="file" accept="image/jpeg,image/png" required />
+            <span class="upload-icon" aria-hidden="true">↥</span>
+            <strong id="file-label">Drop a JPG or PNG here</strong>
+            <small>or click to browse · up to 20 MB</small>
+          </label>
+          <div class="settings">
+            <label>Thread colors
+              <select id="colors" name="colors">
+                <option value="4">4 colors</option>
+                <option value="6" selected>6 colors</option>
+                <option value="8">8 colors</option>
+              </select>
+            </label>
+            <label>Longest side
+              <select id="size" name="size">
+                <option value="60">60 mm</option>
+                <option value="90" selected>90 mm</option>
+                <option value="120">120 mm</option>
+              </select>
+            </label>
+          </div>
+          <button id="convert-button" class="primary-button" type="submit">Create embroidery <span aria-hidden="true">→</span></button>
+          <p id="status" class="status" role="status" aria-live="polite">Ready when you are.</p>
+        </form>
+
+        <div class="preview-card">
+          <div class="card-heading"><span class="step-number">02</span><h2>See the transformation</h2></div>
+          <div class="preview-grid">
+            <figure><div class="image-stage"><img id="original-preview" alt="Original uploaded dog photo" hidden /><span class="empty-preview">Your photo</span></div><figcaption>Original</figcaption></figure>
+            <figure><div class="image-stage"><img id="cutout-preview" alt="Dog with background removed" hidden /><span class="empty-preview">Background removed</span></div><figcaption>Cutout</figcaption></figure>
+            <figure class="stitch-figure"><div class="image-stage"><img id="stitch-preview" alt="Simulation of stitches from the DST file" hidden /><span class="empty-preview">Stitch preview</span></div><figcaption>Stitches</figcaption></figure>
+          </div>
+          <div id="results" class="results" hidden>
+            <div class="result-heading"><div><p class="eyebrow">Ready to sew</p><h3>Download your design</h3></div><p id="metrics" class="metrics"></p></div>
+            <div id="palette" class="palette" aria-label="Thread color sequence"></div>
+            <div id="downloads" class="downloads"></div>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <p>Images stay on your device. The first conversion downloads the background model and embroidery engine.</p>
+        <p>Preview before sewing; fabric and thread affect the result. <a href="https://github.com/joconn819/pandana_embroidery">Source &amp; model credits</a></p>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
