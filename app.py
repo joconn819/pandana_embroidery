@@ -179,10 +179,48 @@ def _hex(colour: RGB) -> str:
     return "#{:02x}{:02x}{:02x}".format(*colour)
 
 
+def texture_direction_map(image: Image.Image, tile_pixels: int = 24):
+    """Estimate local line orientation from the photo before color reduction.
+
+    A structure tensor measures the direction across image detail; the stitch
+    direction is perpendicular to that gradient. Ambiguous tiles keep the
+    conventional vertical fill instead of following noise or cutout edges.
+    """
+    import numpy as np
+    from scipy.ndimage import binary_erosion, gaussian_filter, sobel
+
+    rgba = np.asarray(image.convert("RGBA"))
+    gray = np.asarray(image.convert("L"), dtype=np.float32) / 255.0
+    visible = rgba[:, :, 3] >= 128
+    interior = binary_erosion(visible, iterations=3, border_value=0)
+    smooth = gaussian_filter(gray, 1.0)
+    dx = sobel(smooth, axis=1)
+    dy = sobel(smooth, axis=0)
+    directions = np.full(visible.shape, 90, dtype=np.uint8)
+    bins = np.arange(0, 180, 30)
+    for top in range(0, gray.shape[0], tile_pixels):
+        for left in range(0, gray.shape[1], tile_pixels):
+            area = np.s_[top:top + tile_pixels, left:left + tile_pixels]
+            valid = interior[area]
+            if valid.sum() < max(24, valid.size // 5):
+                continue
+            gx, gy = dx[area][valid], dy[area][valid]
+            xx, xy, yy = float(np.dot(gx, gx)), float(np.dot(gx, gy)), float(np.dot(gy, gy))
+            energy = xx + yy
+            coherence = np.hypot(xx - yy, 2 * xy) / max(energy, 1e-9)
+            if energy / valid.sum() < 0.004 or coherence < 0.28:
+                continue
+            tangent = (0.5 * np.degrees(np.arctan2(2 * xy, xx - yy)) + 90) % 180
+            separation = np.abs((bins - tangent + 90) % 180 - 90)
+            directions[area] = bins[np.argmin(separation)]
+    return directions
+
+
 def image_to_svg(image: Image.Image, path: str | os.PathLike[str],
                  max_dimension: int = 120,
                  max_stitch_mm: float = FILL_MAX_STITCH_MM,
-                 row_spacing_mm: float = FILL_SPACING_MM) -> None:
+                 row_spacing_mm: float = FILL_SPACING_MM,
+                 direction_image: Image.Image | None = None) -> None:
     """Write connected same-colour regions as SVG contour paths."""
     try:
         import numpy as np
@@ -195,6 +233,10 @@ def image_to_svg(image: Image.Image, path: str | os.PathLike[str],
         ) from error
     source = image.convert("RGBA")
     width, height = source.size
+    direction_map = (texture_direction_map(direction_image)
+                     if direction_image is not None else None)
+    if direction_map is not None and direction_map.shape != (height, width):
+        raise ValueError("The direction photo must match the quantized image dimensions.")
     scale = max_dimension / max(width, height)
     svg_width = width * scale
     svg_height = height * scale
@@ -230,47 +272,50 @@ def image_to_svg(image: Image.Image, path: str | os.PathLike[str],
         group_attributes = {"id": f"color-{len(groups) + 1}", "fill": _hex(colour)}
         group = ET.SubElement(root, "g", group_attributes)
         groups[colour] = group
-        components = label(mask_array, connectivity=2)
-        for component_id, bounds in enumerate(find_objects(components), start=1):
-            if bounds is None:
-                continue
-            y_slice, x_slice = bounds
-            component = components[y_slice, x_slice] == component_id
-            if component.sum() < 8 and width * height > 100:
-                continue
-            padded_mask = np.pad(component.astype(float), 1, constant_values=0)
-            path_data_parts = []
-            for contour in find_contours(padded_mask, 0.5):
-                if len(contour) < 3:
+        angles = sorted(set(map(int, direction_map[mask_array]))) if direction_map is not None else [90]
+        for angle in angles:
+            angle_mask = mask_array & (direction_map == angle) if direction_map is not None else mask_array
+            components = label(angle_mask, connectivity=2)
+            for component_id, bounds in enumerate(find_objects(components), start=1):
+                if bounds is None:
                     continue
-                contour = approximate_polygon(contour, tolerance=0.5)
-                points = [(float(point[1] - 1 + x_slice.start),
-                           float(point[0] - 1 + y_slice.start)) for point in contour]
-                area = abs(sum(
-                    points[index][0] * points[(index + 1) % len(points)][1] -
-                    points[(index + 1) % len(points)][0] * points[index][1]
-                    for index in range(len(points))
-                )) / 2
-                if len(points) < 3 or area < 1:
+                y_slice, x_slice = bounds
+                component = components[y_slice, x_slice] == component_id
+                if component.sum() < 8 and width * height > 100:
                     continue
-                path_data_parts.append(
-                    "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z")
-            if not path_data_parts:
-                continue
-            path_attributes = {
-                "d": " ".join(path_data_parts),
-                "fill-rule": "evenodd",
-                f"{{{inkstitch_namespace}}}auto_fill": "true",
-                f"{{{inkstitch_namespace}}}angle": "90",
-                f"{{{inkstitch_namespace}}}row_spacing_mm": str(row_spacing_mm),
-                f"{{{inkstitch_namespace}}}max_stitch_length_mm": str(max_stitch_mm),
-                f"{{{inkstitch_namespace}}}fill_underlay": "true",
-                f"{{{inkstitch_namespace}}}fill_underlay_angle": "0",
-                f"{{{inkstitch_namespace}}}fill_underlay_row_spacing_mm": "0.8",
-                f"{{{inkstitch_namespace}}}fill_underlay_max_stitch_length_mm": str(max_stitch_mm),
-                f"{{{inkstitch_namespace}}}ties": "true",
-            }
-            ET.SubElement(group, "path", path_attributes)
+                padded_mask = np.pad(component.astype(float), 1, constant_values=0)
+                path_data_parts = []
+                for contour in find_contours(padded_mask, 0.5):
+                    if len(contour) < 3:
+                        continue
+                    contour = approximate_polygon(contour, tolerance=0.5)
+                    points = [(float(point[1] - 1 + x_slice.start),
+                               float(point[0] - 1 + y_slice.start)) for point in contour]
+                    area = abs(sum(
+                        points[index][0] * points[(index + 1) % len(points)][1] -
+                        points[(index + 1) % len(points)][0] * points[index][1]
+                        for index in range(len(points))
+                    )) / 2
+                    if len(points) < 3 or area < 1:
+                        continue
+                    path_data_parts.append(
+                        "M " + " L ".join(f"{x:.2f},{y:.2f}" for x, y in points) + " Z")
+                if not path_data_parts:
+                    continue
+                path_attributes = {
+                    "d": " ".join(path_data_parts),
+                    "fill-rule": "evenodd",
+                    f"{{{inkstitch_namespace}}}auto_fill": "true",
+                    f"{{{inkstitch_namespace}}}angle": str(angle),
+                    f"{{{inkstitch_namespace}}}row_spacing_mm": str(row_spacing_mm),
+                    f"{{{inkstitch_namespace}}}max_stitch_length_mm": str(max_stitch_mm),
+                    f"{{{inkstitch_namespace}}}fill_underlay": "true",
+                    f"{{{inkstitch_namespace}}}fill_underlay_angle": str((angle + 90) % 180),
+                    f"{{{inkstitch_namespace}}}fill_underlay_row_spacing_mm": "0.8",
+                    f"{{{inkstitch_namespace}}}fill_underlay_max_stitch_length_mm": str(max_stitch_mm),
+                    f"{{{inkstitch_namespace}}}ties": "true",
+                }
+                ET.SubElement(group, "path", path_attributes)
     ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
@@ -517,7 +562,7 @@ class ConverterApp:
             dst_path = input_path.with_name(input_path.stem + f"_embroidery.{extension}")
             design_max_dimension = max(final_width, final_height)
             image_to_svg(quantized, svg_path, max_dimension=design_max_dimension,
-                         max_stitch_mm=max_stitch)
+                         max_stitch_mm=max_stitch, direction_image=foreground)
             self._conversion_queue.put(("status", "Digitizing and checking stitches…"))
             metrics = svg_to_stitch_file(svg_path, dst_path, format_name=format_name)
             chart_path = input_path.with_name(input_path.stem + "_thread_colors.txt")

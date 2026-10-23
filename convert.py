@@ -37,8 +37,8 @@ def convert_photo(source_path: Path, output_dir: Path, *, colors: int = 6,
     quantized.save(output_dir / f"{stem}-quantized.png")
     svg_path = output_dir / f"{stem}.svg"
     image_to_svg(quantized, svg_path, max_dimension=size_mm,
-                 max_stitch_mm=max_stitch_mm)
-    svg_image = rasterize_region_svg(svg_path)
+                 max_stitch_mm=max_stitch_mm, direction_image=foreground)
+    svg_image, svg_angles = rasterize_region_svg(svg_path, with_angles=True)
     svg_image.save(output_dir / f"{stem}-svg.png")
 
     original = np.asarray(quantized)
@@ -71,6 +71,10 @@ def convert_photo(source_path: Path, output_dir: Path, *, colors: int = 6,
         "thread_colors": thread_colors,
         "svg_silhouette_iou": round(silhouette_iou, 4),
         "svg_exact_pixel_fraction": round(exact_pixels, 4),
+        "stitch_direction_angles_deg": {
+            str(int(angle)): int(count) for angle, count in zip(
+                *np.unique(svg_angles[visible_b], return_counts=True))
+        },
         "designs": designs,
     }
     (output_dir / f"{stem}-metrics.json").write_text(json.dumps(report, indent=2) + "\n")

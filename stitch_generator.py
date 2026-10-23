@@ -22,7 +22,7 @@ MIN_COMPONENT_PIXELS = 16
 MAX_UNTRIMMED_TRAVEL_MM = 10.0
 
 
-def rasterize_region_svg(svg_path: str | Path) -> Image.Image:
+def rasterize_region_svg(svg_path: str | Path, *, with_angles: bool = False):
     """Rasterize the M/L/Z color regions emitted by ``image_to_svg``.
 
     This deliberately supports the converter's SVG subset. Rejecting another
@@ -38,6 +38,7 @@ def rasterize_region_svg(svg_path: str | Path) -> Image.Image:
     if width < 1 or height < 1 or width * height > 4_000_000:
         raise ValueError("SVG viewBox has invalid or excessive dimensions.")
     pixels = np.zeros((height, width, 4), dtype=np.uint8)
+    angles = np.full((height, width), 90, dtype=np.uint8)
     number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
     coordinate = re.compile(rf"({number}),({number})")
     svg_namespace = "{http://www.w3.org/2000/svg}"
@@ -63,9 +64,12 @@ def rasterize_region_svg(svg_path: str | Path) -> Image.Image:
                 parity ^= np.asarray(layer, dtype=bool)
             pixels[parity, :3] = rgb
             pixels[parity, 3] = 255
+            angles[parity] = round(float(path.attrib.get(
+                "{http://inkstitch.org/namespace}angle", "90"))) % 180
     if not pixels[:, :, 3].any():
         raise ValueError("The SVG has no fill regions to stitch.")
-    return Image.fromarray(pixels, "RGBA")
+    image = Image.fromarray(pixels, "RGBA")
+    return (image, angles) if with_angles else image
 
 
 def svg_to_stitch_file(svg_path: str | Path, output_path: str | Path,
@@ -90,10 +94,10 @@ def svg_to_stitch_file(svg_path: str | Path, output_path: str | Path,
         if (float(path.attrib[stitch_ns + "max_stitch_length_mm"]) != max_stitch_mm
                 or float(path.attrib[stitch_ns + "row_spacing_mm"]) != row_spacing_mm):
             raise ValueError("SVG paths have inconsistent stitch parameters.")
-    return create_stitch_file(
-        rasterize_region_svg(svg_path), output_path, format_name,
-        max_dimension_mm, max_stitch_mm, row_spacing_mm,
-    )
+    image, angles = rasterize_region_svg(svg_path, with_angles=True)
+    return create_stitch_file(image, output_path, format_name,
+                              max_dimension_mm, max_stitch_mm, row_spacing_mm,
+                              direction_map=angles)
 
 
 def _runs(values: np.ndarray) -> list[tuple[int, int]]:
@@ -184,6 +188,20 @@ def _normalize_pes_jump_flags(path: str | Path) -> None:
 def _move(pattern: Any, command: int, point: tuple[float, float]) -> None:
     import pyembroidery
 
+    if command == pyembroidery.STITCH and pattern.stitches:
+        previous = pattern.stitches[-1]
+        distance = math.hypot(point[0] - previous[0], point[1] - previous[1])
+        if distance < 4.8:
+            return
+        if distance > 39.0:
+            segments = math.ceil(distance / 39.0)
+            for index in range(1, segments):
+                fraction = index / segments
+                pattern.add_stitch_absolute(
+                    command,
+                    previous[0] + (point[0] - previous[0]) * fraction,
+                    previous[1] + (point[1] - previous[1]) * fraction,
+                )
     pattern.add_stitch_absolute(command, point[0], point[1])
     if command in (pyembroidery.TRIM, pyembroidery.COLOR_CHANGE):
         pattern._needs_tie = True
@@ -228,7 +246,8 @@ def _jump_to(pattern: Any, start: tuple[float, float] | None,
 def _fill_pass(pattern: Any, component: np.ndarray, *, horizontal: bool,
                step_px: int, units_per_px: float, max_stitch_mm: float,
                current: tuple[float, float] | None,
-               offset_x: int = 0, offset_y: int = 0) -> tuple[float, float] | None:
+               offset_x: int = 0, offset_y: int = 0,
+               angle_deg: int | None = None) -> tuple[float, float] | None:
     """Sew a serpentine raster fill; short row transitions stay under the fill."""
     import pyembroidery
     import numpy as np
@@ -236,8 +255,20 @@ def _fill_pass(pattern: Any, component: np.ndarray, *, horizontal: bool,
     ys, xs = np.nonzero(component)
     if not len(xs):
         return current
-    low, high = (int(ys.min()), int(ys.max())) if horizontal else (int(xs.min()), int(xs.max()))
-    scan_positions = list(range(low, high + 1, max(1, step_px)))
+    if angle_deg is None:
+        angle_deg = 0 if horizontal else 90
+    angle_deg %= 180
+    direction = (math.cos(math.radians(angle_deg)), math.sin(math.radians(angle_deg)))
+    normal = (-direction[1], direction[0])
+    if angle_deg in (0, 90):
+        low, high = (int(ys.min()), int(ys.max())) if angle_deg == 0 else (int(xs.min()), int(xs.max()))
+        scan_positions = list(range(low, high + 1, max(1, step_px)))
+    else:
+        projections = xs * normal[0] + ys * normal[1]
+        scan_positions = np.arange(math.floor(projections.min()),
+                                   math.ceil(projections.max()) + 0.1, max(1, step_px))
+        tangent = xs * direction[0] + ys * direction[1]
+        tangent_low, tangent_high = math.floor(tangent.min()), math.ceil(tangent.max())
     reverse_scan = False
     max_step = max_stitch_mm * 10.0
 
@@ -321,17 +352,33 @@ def _fill_pass(pattern: Any, component: np.ndarray, *, horizontal: bool,
         return stitches
 
     for scan in scan_positions:
-        line = component[scan, :] if horizontal else component[:, scan]
-        intervals = _runs(line)
+        if angle_deg in (0, 90):
+            line = component[scan, :] if angle_deg == 0 else component[:, scan]
+            intervals = _runs(line)
+            samples = None
+        else:
+            samples = np.arange(tangent_low, tangent_high + 0.01, 0.5)
+            sample_x = np.rint(samples * direction[0] + scan * normal[0]).astype(int)
+            sample_y = np.rint(samples * direction[1] + scan * normal[1]).astype(int)
+            inside = ((sample_x >= 0) & (sample_x < component.shape[1]) &
+                      (sample_y >= 0) & (sample_y < component.shape[0]))
+            line = np.zeros(samples.shape, dtype=bool)
+            line[inside] = component[sample_y[inside], sample_x[inside]]
+            intervals = _runs(line)
         if reverse_scan:
             intervals.reverse()
         for start, end in intervals:
-            if horizontal:
+            if angle_deg == 0:
                 a = (start + offset_x, scan + offset_y)
                 b = (end + offset_x, scan + offset_y)
-            else:
+            elif angle_deg == 90:
                 a = (scan + offset_x, start + offset_y)
                 b = (scan + offset_x, end + offset_y)
+            else:
+                a = (samples[start] * direction[0] + scan * normal[0] + offset_x,
+                     samples[start] * direction[1] + scan * normal[1] + offset_y)
+                b = (samples[end] * direction[0] + scan * normal[0] + offset_x,
+                     samples[end] * direction[1] + scan * normal[1] + offset_y)
             if reverse_scan:
                 a, b = b, a
             first = (a[0] * units_per_px, a[1] * units_per_px)
@@ -373,7 +420,8 @@ def _fill_pass(pattern: Any, component: np.ndarray, *, horizontal: bool,
 def create_stitch_file(image: Image.Image, output_path: str | Path,
                        format_name: str = "DST", max_dimension_mm: float = 90.0,
                        max_stitch_mm: float = FILL_MAX_STITCH_MM,
-                       row_spacing_mm: float = FILL_SPACING_MM) -> dict[str, float | int | list[tuple[int, int, int]]]:
+                       row_spacing_mm: float = FILL_SPACING_MM,
+                       direction_map: np.ndarray | None = None) -> dict[str, float | int | list[tuple[int, int, int]]]:
     """Convert color regions into satin-free tatami fills and verify the written file.
 
     The image should already be background-removed and k-means quantized. Each
@@ -406,11 +454,18 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
     if bounds is None:
         raise ValueError("No foreground pixels remain after removing the background.")
     rgba = rgba.crop(bounds)
+    if direction_map is not None:
+        if direction_map.shape != image.size[::-1]:
+            raise ValueError("Direction map does not match the source image.")
+        direction_map = direction_map[bounds[1]:bounds[3], bounds[0]:bounds[2]]
     width, height = rgba.size
     target_long_edge = max(2, round(max_dimension_mm / row_spacing_mm))
     scale = target_long_edge / max(width, height)
     target_size = (max(1, round(width * scale)), max(1, round(height * scale)))
     rgba = rgba.resize(target_size, Image.Resampling.NEAREST)
+    if direction_map is not None:
+        direction_map = np.asarray(Image.fromarray(direction_map).resize(
+            target_size, Image.Resampling.NEAREST))
     pixels = np.asarray(rgba)
     height, width = pixels.shape[:2]
     units_per_px = max_dimension_mm * 10.0 / max(width, height)
@@ -427,14 +482,18 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
     color_layers = []
     for color in candidates:
         color_mask = visible & np.all(pixels[:, :, :3] == color, axis=2)
-        components = label(color_mask, connectivity=2)
-        component_ids, counts = np.unique(components[components > 0], return_counts=True)
-        slices = find_objects(components)
-        kept = [(int(component_id), slices[int(component_id) - 1])
-                for component_id, count in zip(component_ids, counts)
-                if count >= MIN_COMPONENT_PIXELS]
-        if kept:
-            color_layers.append((color, components, kept))
+        regions = []
+        for angle in (sorted(set(map(int, direction_map[color_mask])))
+                      if direction_map is not None else [90]):
+            mask = color_mask & (direction_map == angle) if direction_map is not None else color_mask
+            components = label(mask, connectivity=2)
+            component_ids, counts = np.unique(components[components > 0], return_counts=True)
+            slices = find_objects(components)
+            regions.extend((angle, components, int(component_id), slices[int(component_id) - 1])
+                           for component_id, count in zip(component_ids, counts)
+                           if count >= MIN_COMPONENT_PIXELS)
+        if regions:
+            color_layers.append((color, regions))
     colors = [layer[0] for layer in color_layers]
     if not colors:
         raise ValueError("No foreground region is large enough to embroider.")
@@ -447,39 +506,38 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
         pattern.add_thread(thread)
 
     current: tuple[float, float] | None = None
-    for color_index, (color, components, kept) in enumerate(color_layers):
+    for color_index, (color, regions) in enumerate(color_layers):
         if color_index:
             if current is not None:
                 _lock_before_trim(pattern, current)
                 _move(pattern, pyembroidery.TRIM, current)
                 _move(pattern, pyembroidery.COLOR_CHANGE, current)
-        pending = list(kept)
+        pending = list(regions)
         while pending:
             if current is None:
                 anchor = (0.0, 0.0)
             else:
                 anchor = (current[0] / units_per_px, current[1] / units_per_px)
-            component_id, bounds = min(
-                pending,
-                key=lambda item: math.hypot(
-                    (item[1][1].start + item[1][1].stop - 1) / 2 - anchor[0],
-                    (item[1][0].start + item[1][0].stop - 1) / 2 - anchor[1],
-                ),
-            )
-            pending.remove((component_id, bounds))
+            nearest_index = min(range(len(pending)), key=lambda index: math.hypot(
+                (pending[index][3][1].start + pending[index][3][1].stop - 1) / 2 - anchor[0],
+                (pending[index][3][0].start + pending[index][3][0].stop - 1) / 2 - anchor[1],
+            ))
+            angle, components, component_id, bounds = pending.pop(nearest_index)
             y_slice, x_slice = bounds
             component = components[y_slice, x_slice] == component_id
-            # Light cross underlay first, then denser top fill at right angles.
+            # Light underlay across the texture, then top rows along it.
             current = _fill_pass(
                 pattern, component, horizontal=True,
                 step_px=max(1, round(UNDERLAY_SPACING_MM / (max_dimension_mm / max(width, height)))),
                 units_per_px=units_per_px, max_stitch_mm=max_stitch_mm, current=current,
                 offset_x=x_slice.start, offset_y=y_slice.start,
+                angle_deg=(angle + 90) % 180,
             )
             current = _fill_pass(
                 pattern, component, horizontal=False, step_px=1,
                 units_per_px=units_per_px, max_stitch_mm=max_stitch_mm, current=current,
                 offset_x=x_slice.start, offset_y=y_slice.start,
+                angle_deg=angle,
             )
 
     if not colors or current is None:

@@ -64,6 +64,17 @@ reading the written DST/PES file back. At least 90% of vector fill pixels must
 have a needle-down path within one fill-row pixel. PES jump flags are adjusted after
 `pyembroidery` export so short jumps do not all become trims.
 
+Top stitches follow a local texture angle estimated from the background-removed
+photo before K-means removes its fine detail. A structure tensor measures the
+dominant line orientation in 24-pixel areas, rounded to 30-degree increments.
+The angle is saved on each SVG fill path and used by the DST/PES generator;
+underlay runs across that angle. Areas with weak or conflicting texture use a
+90-degree fill. The metrics file lists the number of SVG pixels at each angle.
+This estimates visible line orientation, not the biological root-to-tip
+direction of fur. Very smooth, blurred, or tiny image areas cannot provide a
+reliable direction; inspect the preview and adjust the SVG angles manually if
+a specific coat flow matters.
+
 The converter checks that the traced SVG retains at least 90% of the dog's
 silhouette by intersection-over-union and that at least 85% of image pixels
 match their quantized colors exactly. These checks catch major tracing loss;
