@@ -1,6 +1,6 @@
 # Pandana Embroidery Converter
 
-Convert a dog photo into a background-free, six-color SVG and then into DST or
+Convert a dog photo into a background-free, color-reduced SVG and then into DST or
 PES fill stitches. The included Tkinter app is for interactive use; `convert.py`
 offers the same pipeline from a terminal. The SVG is the geometry used to
 generate the machine files.
@@ -46,8 +46,9 @@ For `dog.jpg`, the command writes into `output/dog/`:
 | `dog-metrics.json` | Measured dimensions, travel, stitch count, and SVG fidelity |
 
 Use `--colors 8`, `--size-mm 110`, or `--max-stitch-mm 3.5` to change the
-design. Each color is sewn as one thread block. Six colors and a 90 mm longest
-dimension are the photo preset. The desktop app writes its outputs beside the
+design. Photo designs support 1–15 thread colors and a longest side from 10 to
+300 mm. Each color is sewn as one thread block. Six colors and a 90 mm longest
+dimension are the CLI defaults. The desktop app writes its outputs beside the
 selected image; **See workflow** displays the original, cutout, color regions,
 and actual stitch preview.
 

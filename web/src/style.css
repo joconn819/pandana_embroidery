@@ -33,7 +33,8 @@ h2{font-size:1.55rem;line-height:1.2;letter-spacing:-.03em;margin:0}
 .drop-zone small{color:#788276;font-size:.76rem}
 .settings{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:22px 0}
 .settings label{font-size:.75rem;font-weight:700;color:#656c60;display:flex;flex-direction:column;gap:8px}
-.settings select{width:100%;border:1px solid #cdd1c6;border-radius:10px;background:#fff;color:#2f352d;padding:11px 10px;font-size:.92rem}
+.settings select,.settings input[type=number]{width:100%;border:1px solid #cdd1c6;border-radius:10px;background:#fff;color:#2f352d;padding:11px 10px;font-size:.92rem}
+.settings small{font-size:.68rem;font-weight:400;color:#788276}
 .primary-button{width:100%;display:flex;align-items:center;justify-content:space-between;background:#274d40;color:#fff;border:0;border-radius:11px;font-weight:700;padding:15px 17px;cursor:pointer;box-shadow:0 5px 12px rgba(25,63,42,.13)}
 .primary-button:hover{background:#37664e}
 .primary-button:disabled{cursor:progress;opacity:.6}

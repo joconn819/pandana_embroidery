@@ -19,10 +19,10 @@ def convert_photo(source_path: Path, output_dir: Path, *, colors: int = 6,
                   size_mm: float = 90.0, max_stitch_mm: float = 4.0,
                   model: str = "u2netp", formats: tuple[str, ...] = ("DST", "PES"),
                   process_pixels: int = 240) -> dict:
-    if not 1 <= colors <= 12:
-        raise ValueError("Photo designs require between 1 and 12 colors.")
-    if size_mm <= 0 or not 0.4 <= max_stitch_mm <= 4.0 or process_pixels < 64:
-        raise ValueError("Use a positive size, stitch length 0.4–4 mm, and ≥ 64 pixels.")
+    if not 1 <= colors <= 15:
+        raise ValueError("Photo designs require between 1 and 15 colors.")
+    if not 10 <= size_mm <= 300 or not 0.4 <= max_stitch_mm <= 4.0 or process_pixels < 64:
+        raise ValueError("Use a size of 10–300 mm, stitch length 0.4–4 mm, and ≥ 64 pixels.")
     output_dir.mkdir(parents=True, exist_ok=True)
     with Image.open(source_path) as opened:
         image = ImageOps.exif_transpose(opened).convert("RGBA")

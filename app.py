@@ -517,8 +517,8 @@ class ConverterApp:
             return
         try:
             k = self.k_value.get()
-            if not 1 <= k <= 12:
-                raise ValueError("Photo designs require between 1 and 12 colours.")
+            if not 1 <= k <= 15:
+                raise ValueError("Photo designs require between 1 and 15 colours.")
             final_width = self.width_value.get()
             final_height = self.height_value.get()
             max_stitch = self.stitch_value.get()

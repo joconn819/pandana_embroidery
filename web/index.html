@@ -18,7 +18,7 @@
         <div class="hero-copy">
           <p class="eyebrow">Photo → thread</p>
           <h1 id="page-title">Your best friend,<br /><em>in stitches.</em></h1>
-          <p class="intro">Turn a dog photo into a six-color embroidery design. See the stitch preview, then download files for your machine.</p>
+          <p class="intro">Turn a dog photo into an embroidery design. See the stitch preview, then download files for your machine.</p>
         </div>
       </section>
 
@@ -33,18 +33,12 @@
           </label>
           <div class="settings">
             <label>Thread colors
-              <select id="colors" name="colors">
-                <option value="4">4 colors</option>
-                <option value="6" selected>6 colors</option>
-                <option value="8">8 colors</option>
-              </select>
+              <input id="colors" name="colors" type="number" min="1" max="15" step="1" value="6" required inputmode="numeric" />
+              <small>Enter 1–15 colors</small>
             </label>
-            <label>Longest side
-              <select id="size" name="size">
-                <option value="60">60 mm</option>
-                <option value="90" selected>90 mm</option>
-                <option value="120">120 mm</option>
-              </select>
+            <label>Longest side (mm)
+              <input id="size" name="size" type="number" min="10" max="300" step="1" value="90" required inputmode="decimal" />
+              <small>Enter 10–300 mm</small>
             </label>
           </div>
           <button id="convert-button" class="primary-button" type="submit">Create embroidery <span aria-hidden="true">→</span></button>

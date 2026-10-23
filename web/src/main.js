@@ -5,6 +5,8 @@ const form = document.querySelector('#convert-form')
 const input = document.querySelector('#photo-input')
 const dropZone = document.querySelector('#drop-zone')
 const fileLabel = document.querySelector('#file-label')
+const colorsInput = document.querySelector('#colors')
+const sizeInput = document.querySelector('#size')
 const button = document.querySelector('#convert-button')
 const status = document.querySelector('#status')
 const resultPanel = document.querySelector('#results')
@@ -136,6 +138,13 @@ form.addEventListener('submit', async event => {
     updateStatus('Choose a dog photo first.', true)
     return
   }
+  const colors = colorsInput.valueAsNumber
+  const sizeMm = sizeInput.valueAsNumber
+  if (!Number.isInteger(colors) || colors < 1 || colors > 15 ||
+      !Number.isFinite(sizeMm) || sizeMm < 10 || sizeMm > 300) {
+    updateStatus('Enter 1–15 thread colors and a longest side from 10 to 300 mm.', true)
+    return
+  }
   busy = true
   button.disabled = true
   resultPanel.hidden = true
@@ -145,8 +154,8 @@ form.addEventListener('submit', async event => {
     showPreview(previews.cutout, cutout)
     const result = await digitize(
       await cutout.arrayBuffer(),
-      Number(document.querySelector('#colors').value),
-      Number(document.querySelector('#size').value),
+      colors,
+      sizeMm,
     )
     showResults(result, currentFile.name)
     updateStatus('Your embroidery files are ready.')
