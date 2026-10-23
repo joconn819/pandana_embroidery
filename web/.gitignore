@@ -1,0 +1,5 @@
+node_modules/
+dist/
+public/model/
+public/python/
+public/ort/

@@ -1,0 +1,16 @@
+{
+  "name": "pandana-embroidery-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/prepare.mjs && vite --host 127.0.0.1",
+    "build": "node scripts/prepare.mjs && vite build",
+    "preview": "vite preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "onnxruntime-web": "1.30.0"
+  },
+  "devDependencies": {
+    "vite": "8.3.5"
+  }
+}
