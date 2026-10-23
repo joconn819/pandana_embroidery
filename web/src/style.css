@@ -10,16 +10,13 @@ button,a{touch-action:manipulation}
 .wordmark{text-decoration:none;color:#24483d;font-size:1.05rem;font-weight:700;letter-spacing:.17em;display:flex;align-items:center;gap:10px}
 .brand-mark{font-size:1.75rem;line-height:1;color:#9c683e}
 .header-note{font-size:.83rem;letter-spacing:.04em;color:#6b7166}
-.hero{min-height:270px;display:flex;justify-content:space-between;align-items:center;gap:36px;padding:38px 0 34px}
+.hero{padding:38px 0 34px}
 .eyebrow{text-transform:uppercase;letter-spacing:.2em;font-size:.72rem;font-weight:700;color:#aa7650;margin:0 0 13px}
 h1,h2,h3,p{margin-top:0}
 h1,h2,h3{font-family:'Fraunces',Georgia,serif}
 h1{font-size:clamp(3rem,5.5vw,5.5rem);line-height:1.02;letter-spacing:-.055em;margin-bottom:20px}
 h1 em{color:#ab704c;font-weight:600}
 .intro{font-size:1rem;line-height:1.6;max-width:550px;color:#626a60;margin:0}
-.hero-swatch{width:240px;height:220px;flex:none;border:1px solid #beab88;border-radius:47% 53% 54% 46%;background:#d1d6bd;transform:rotate(-8deg);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#627963;box-shadow:20px 17px 0 #e0d1b7}
-.hero-swatch span{font-size:7rem;line-height:.8;transform:rotate(18deg)}
-.hero-swatch small{font-family:'Fraunces',Georgia,serif;font-style:italic;font-size:1rem;margin-top:14px;transform:rotate(8deg)}
 .workspace{display:grid;grid-template-columns:minmax(290px,370px) minmax(0,1fr);gap:22px;align-items:start;padding-bottom:45px}
 .control-card,.preview-card{background:#faf8f2;border:1px solid #d4d1c5;border-radius:22px;box-shadow:0 9px 30px rgba(63,61,45,.05)}
 .control-card{padding:27px}
@@ -62,5 +59,5 @@ h3{font-size:1.45rem;margin:0;letter-spacing:-.03em}
 footer{display:flex;justify-content:space-between;gap:20px;border-top:1px solid #c9c9b9;padding:22px 0 36px;color:#747a6f;font-size:.74rem;line-height:1.5}
 footer p{margin:0;max-width:48%}
 footer a{color:#3a6b50;text-underline-offset:2px}
-@media(max-width:900px){.hero-swatch{display:none}.workspace{grid-template-columns:1fr}.preview-card{min-height:0}.image-stage{height:250px}}
+@media(max-width:900px){.workspace{grid-template-columns:1fr}.preview-card{min-height:0}.image-stage{height:250px}}
 @media(max-width:620px){.shell{width:min(100% - 28px,480px)}.site-header{padding:20px 0}.header-note{display:none}.hero{padding:38px 0}.control-card,.preview-card{padding:20px}.preview-grid{grid-template-columns:1fr 1fr}.stitch-figure{grid-column:1/-1}.image-stage{height:190px}.stitch-figure .image-stage{height:300px}.result-heading{align-items:start;flex-direction:column}.metrics{text-align:left}footer{flex-direction:column}footer p{max-width:none}}
