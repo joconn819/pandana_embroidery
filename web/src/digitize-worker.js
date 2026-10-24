@@ -38,7 +38,7 @@ from convert import convert_photo
 settings = json.loads(settings_json)
 convert_photo(Path('/workspace/input.png'), Path('/workspace/output'),
               colors=settings['colors'], size_mm=settings['size_mm'],
-              formats=('DST', 'PES'))
+              formats=('DST', 'PES'), process_pixels=512)
 `)
     const names = runtime.FS.readdir('/workspace/output').filter(name => !name.startsWith('.'))
     const files = names.map(name => ({

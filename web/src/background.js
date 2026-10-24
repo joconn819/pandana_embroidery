@@ -1,7 +1,10 @@
 import * as ort from 'onnxruntime-web/wasm'
 
 const INPUT_SIZE = 320
-const PROCESS_SIZE = 240
+// Keep enough source detail for narrow features such as ears, tails, and legs.
+// The segmentation model still runs at 320px, but we resample its mask back to
+// this larger source before vectorization and stitch planning.
+const PROCESS_SIZE = 512
 const MEAN = [0.485, 0.456, 0.406]
 const STD = [0.229, 0.224, 0.225]
 let modelSession
