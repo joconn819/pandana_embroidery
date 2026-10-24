@@ -459,7 +459,10 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
             raise ValueError("Direction map does not match the source image.")
         direction_map = direction_map[bounds[1]:bounds[3], bounds[0]:bounds[2]]
     width, height = rgba.size
-    target_long_edge = max(2, round(max_dimension_mm / row_spacing_mm))
+    # Keep two raster pixels per fill row so a half-row (0.2 mm) overlap can
+    # be represented without increasing the specified top-fill density.
+    raster_step_mm = row_spacing_mm / 2
+    target_long_edge = max(2, round(max_dimension_mm / raster_step_mm))
     scale = target_long_edge / max(width, height)
     target_size = (max(1, round(width * scale)), max(1, round(height * scale)))
     rgba = rgba.resize(target_size, Image.Resampling.NEAREST)
@@ -477,7 +480,7 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
     if not candidates:
         raise ValueError("No stitchable color regions remain after cleanup.")
 
-    from scipy.ndimage import find_objects
+    from scipy.ndimage import binary_dilation, find_objects
 
     color_layers = []
     for color in candidates:
@@ -486,6 +489,10 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
         for angle in (sorted(set(map(int, direction_map[color_mask])))
                       if direction_map is not None else [90]):
             mask = color_mask & (direction_map == angle) if direction_map is not None else color_mask
+            # Overlap neighboring color fills by half a raster step (0.2 mm at
+            # the default density). Keep the expansion inside the subject so
+            # it closes internal seams without enlarging the outer silhouette.
+            mask = binary_dilation(mask, structure=np.ones((3, 3), dtype=bool)) & visible
             components = label(mask, connectivity=2)
             component_ids, counts = np.unique(components[components > 0], return_counts=True)
             slices = find_objects(components)
@@ -534,7 +541,8 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
                 angle_deg=(angle + 90) % 180,
             )
             current = _fill_pass(
-                pattern, component, horizontal=False, step_px=1,
+                pattern, component, horizontal=False,
+                step_px=max(1, round(row_spacing_mm / (max_dimension_mm / max(width, height)))),
                 units_per_px=units_per_px, max_stitch_mm=max_stitch_mm, current=current,
                 offset_x=x_slice.start, offset_y=y_slice.start,
                 angle_deg=angle,
