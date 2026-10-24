@@ -647,9 +647,10 @@ def create_stitch_file(image: Image.Image, output_path: str | Path,
 
 def render_stitch_preview(path: str | Path, format_name: str,
                           palette: list[tuple[int, int, int]],
-                          pixels_per_mm: float = 5.0) -> Image.Image:
-    """Render only needle-down DST/PES/JEF movements as a thread preview."""
+                          pixels_per_mm: float = 10.0) -> Image.Image:
+    """Render the written machine stitch plan as shaded thread on woven cloth."""
     import pyembroidery
+    import numpy as np
 
     readers = {"DST": pyembroidery.read_dst, "PES": pyembroidery.read_pes,
                "JEF": pyembroidery.read_jef}
@@ -662,17 +663,35 @@ def render_stitch_preview(path: str | Path, format_name: str,
     xs = [movement[0] for movement in movements]
     ys = [movement[1] for movement in movements]
     min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
-    scale = pixels_per_mm / 10.0
-    padding = round(pixels_per_mm * 4)
+    design_mm = max(max_x - min_x, max_y - min_y) / 10.0
+    render_ppm = min(pixels_per_mm, 1600.0 / max(1.0, design_mm))
+    scale = render_ppm / 10.0
+    padding = round(render_ppm * 4)
     size = (max(80, round((max_x - min_x) * scale + padding * 2)),
             max(80, round((max_y - min_y) * scale + padding * 2)))
-    result = Image.new("RGB", size, (237, 230, 211))
+    width, height = size
+    yy, xx = np.mgrid[0:height, 0:width]
+    rng = np.random.default_rng(17)
+    weave_period = max(3.0, render_ppm * 0.7)
+    weave = 1.4 * np.sin(xx * (2 * np.pi / weave_period)) + 1.2 * np.sin(yy * (2 * np.pi / weave_period))
+    vignette = ((xx - width * 0.48) ** 2 / max(1, width ** 2) +
+                (yy - height * 0.43) ** 2 / max(1, height ** 2))
+    grain = rng.normal(0.0, 1.7, (height, width))
+    fabric = np.empty((height, width, 3), dtype=np.uint8)
+    for channel, base in enumerate((238, 231, 214)):
+        fabric[:, :, channel] = np.clip(base + weave + grain - vignette * 18, 0, 255)
+    result = Image.fromarray(fabric, "RGB")
     draw = ImageDraw.Draw(result)
     current = None
     color_index = 0
     thread = palette[0] if palette else (40, 40, 40)
-    line_width = max(1, round(pixels_per_mm * 0.45))
-    for x, y, command in movements:
+    line_width = max(2, round(render_ppm * 0.42))
+    background = (238, 231, 214)
+
+    def blend(color: tuple[int, int, int], other: tuple[int, int, int], amount: float):
+        return tuple(round(a * (1 - amount) + b * amount) for a, b in zip(color, other))
+
+    for stitch_index, (x, y, command) in enumerate(movements):
         point = (padding + round((x - min_x) * scale),
                  padding + round((y - min_y) * scale))
         if command == pyembroidery.COLOR_CHANGE:
@@ -682,6 +701,25 @@ def render_stitch_preview(path: str | Path, format_name: str,
             current = None
             continue
         if command == pyembroidery.STITCH and current is not None:
-            draw.line((current, point), fill=thread, width=line_width)
+            dx, dy = point[0] - current[0], point[1] - current[1]
+            length = math.hypot(dx, dy)
+            if length >= 1:
+                nx, ny = -dy / length, dx / length
+                if nx * -0.4 + ny * -0.7 < 0:
+                    nx, ny = -nx, -ny
+                phase = 0.985 + 0.025 * math.sin(stitch_index * 0.37)
+                body = tuple(max(0, min(255, round(channel * phase))) for channel in thread)
+                edge = blend(body, (20, 24, 22), 0.32)
+                shadow = blend(body, background, 0.56)
+                offset = max(1, line_width // 3)
+                shadow_path = ((current[0] + 1, current[1] + 2),
+                               (point[0] + 1, point[1] + 2))
+                draw.line(shadow_path, fill=shadow, width=line_width + 3)
+                draw.line((current, point), fill=edge, width=line_width + 2)
+                draw.line((current, point), fill=body, width=line_width)
+                highlight = blend(body, (255, 250, 232), 0.58)
+                highlight_path = ((round(current[0] + nx * offset), round(current[1] + ny * offset)),
+                                  (round(point[0] + nx * offset), round(point[1] + ny * offset)))
+                draw.line(highlight_path, fill=highlight, width=max(1, line_width // 4))
         current = point if command == pyembroidery.STITCH else None
     return result
